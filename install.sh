@@ -1,65 +1,76 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-# SkylerNodes Fully Automatic Pterodactyl Installer
+# SkylerNodes Professional Pterodactyl Panel Installer
 # Independent third-party installer. Not affiliated with Pterodactyl or Nobita Cloud.
 
 APP="SkylerNodes"
 PANEL_DIR="/var/www/pterodactyl"
-PTERO_DIR="/etc/pterodactyl"
-WINGS_BIN="/usr/local/bin/wings"
+PTERO_ETC="/etc/pterodactyl"
 BACKUP_DIR="/root/skylernodes-backups"
 QUEUE_SERVICE="/etc/systemd/system/pteroq.service"
-WINGS_SERVICE="/etc/systemd/system/wings.service"
 NGINX_CONF="/etc/nginx/sites-available/pterodactyl.conf"
+PHPMYADMIN_CONF="/etc/nginx/sites-available/phpmyadmin.conf"
 
-R='\033[0m'; BLUE='\033[38;5;75m'; CYAN='\033[38;5;81m'; GREEN='\033[38;5;82m'
-YELLOW='\033[38;5;220m'; RED='\033[38;5;203m'; PURPLE='\033[38;5;141m'; GRAY='\033[38;5;245m'
+R='\033[0m'; BLUE='\033[38;5;39m'; CYAN='\033[38;5;51m'; GREEN='\033[38;5;82m'
+YELLOW='\033[38;5;220m'; RED='\033[38;5;203m'; PURPLE='\033[38;5;141m'; GRAY='\033[38;5;245m'; WHITE='\033[97m'
 
 ok(){ echo -e "${GREEN}  ✓${R} $*"; }
 info(){ echo -e "${CYAN}  •${R} $*"; }
 warn(){ echo -e "${YELLOW}  !${R} $*"; }
 die(){ echo -e "${RED}  ✗${R} $*" >&2; exit 1; }
 pause(){ echo; read -r -p "  Press Enter to return..." _; }
-
 trap 'die "Operation stopped at line $LINENO."' ERR
 
 [[ $EUID -eq 0 ]] || die "Run this installer as root."
-
 source /etc/os-release
-[[ "$ID" == "ubuntu" ]] || die "Ubuntu 22.04/24.04 is required."
-[[ "$VERSION_ID" == "22.04" || "$VERSION_ID" == "24.04" ]] || die "Use Ubuntu 22.04 or 24.04."
+
+case "${ID:-}" in
+  ubuntu)
+    case "${VERSION_ID:-}" in
+      22.04|24.04) ;;
+      *) die "Supported Ubuntu versions: 22.04 and 24.04." ;;
+    esac
+    OS_FAMILY="Ubuntu"
+    ;;
+  debian)
+    case "${VERSION_ID:-}" in
+      11|12|13) ;;
+      *) die "Supported Debian versions: 11, 12 and 13." ;;
+    esac
+    OS_FAMILY="Debian"
+    ;;
+  *)
+    die "Supported operating systems: Debian 11/12/13 or Ubuntu 22.04/24.04."
+    ;;
+esac
 
 header(){
   clear 2>/dev/null || true
   echo -e "${BLUE}"
-  cat <<'EOF'
+  cat <<'BANNER'
 ╔════════════════════════════════════════════════════════════════════╗
 ║                                                                    ║
-║      ███████╗██╗  ██╗██╗   ██╗██╗     ███████╗██████╗             ║
-║      ██╔════╝██║ ██╔╝╚██╗ ██╔╝██║     ██╔════╝██╔══██╗            ║
-║      ███████╗█████╔╝  ╚████╔╝ ██║     █████╗  ██████╔╝            ║
-║      ╚════██║██╔═██╗   ╚██╔╝  ██║     ██╔══╝  ██╔══██╗            ║
-║      ███████║██║  ██╗   ██║   ███████╗███████╗██║  ██║            ║
-║      ╚══════╝╚═╝  ╚═╝   ╚═╝   ╚══════╝╚══════╝╚═╝  ╚═╝            ║
+║             ███████╗██╗  ██╗██╗   ██╗██╗     ███████╗             ║
+║             ██╔════╝██║ ██╔╝╚██╗ ██╔╝██║     ██╔════╝             ║
+║             ███████╗█████╔╝  ╚████╔╝ ██║     █████╗               ║
+║             ╚════██║██╔═██╗   ╚██╔╝  ██║     ██╔══╝               ║
+║             ███████║██║  ██╗   ██║   ███████╗███████╗             ║
+║             ╚══════╝╚═╝  ╚═╝   ╚═╝   ╚══════╝╚══════╝             ║
 ║                                                                    ║
-║              S K Y L E R N O D E S                                 ║
-║          A L L - I N - O N E   I N S T A L L E R                  ║
+║                 S K Y L E R N O D E S                              ║
+║             P T E R O D A C T Y L  I N S T A L L E R              ║
 ║                                                                    ║
-║              FAST  •  SECURE  •  STABLE  •  AUTOMATIC             ║
+║             FAST  •  CLEAN  •  AUTOMATIC  •  STABLE               ║
 ╚════════════════════════════════════════════════════════════════════╝
-EOF
+BANNER
   echo -e "${R}"
 }
 
-random_pass(){ tr -dc 'A-Za-z0-9' </dev/urandom | head -c 32 || true; }
-
 progress(){
   local label="$1" current="$2" total="${3:-100}"
-  local width=28
-  local filled=$(( current * width / total ))
-  local empty=$(( width - filled ))
-  local bar=""
+  local width=28 filled empty bar=""
+  filled=$(( current * width / total )); empty=$(( width - filled ))
   (( filled > 0 )) && bar=$(printf '%*s' "$filled" '' | tr ' ' '█')
   (( empty > 0 )) && bar="${bar}$(printf '%*s' "$empty" '' | tr ' ' '░')"
   printf "\r  ${BLUE}%-34s${R} [${CYAN}%s${R}] %3d%%" "$label" "$bar" "$current"
@@ -67,42 +78,45 @@ progress(){
 }
 step(){
   local label="$1"
-  progress "$label" 0 100
-  for n in 20 40 60 80 100; do
-    sleep 0.08
-    progress "$label" "$n" 100
-  done
+  progress "$label" 0
+  for n in 20 40 60 80 100; do sleep 0.05; progress "$label" "$n"; done
+}
+
+random_pass(){ tr -dc 'A-Za-z0-9' </dev/urandom | head -c 32 || true; }
+
+set_env(){
+  local key="$1" value="$2"
+  if grep -qE "^${key}=" .env; then
+    sed -i "s#^${key}=.*#${key}=${value}#" .env
+  else
+    echo "${key}=${value}" >> .env
+  fi
 }
 
 base_packages(){
   export DEBIAN_FRONTEND=noninteractive
   apt-get update
-  apt-get install -y software-properties-common ca-certificates curl gnupg \
-    nginx mariadb-server redis-server cron git tar unzip openssl jq \
-    certbot python3-certbot-nginx
-
+  apt-get install -y software-properties-common ca-certificates curl gnupg nginx mariadb-server redis-server cron git tar unzip openssl jq certbot python3-certbot-nginx
   add-apt-repository -y ppa:ondrej/php
   apt-get update
-  apt-get install -y php8.3 php8.3-cli php8.3-common php8.3-gd php8.3-mysql \
-    php8.3-mbstring php8.3-bcmath php8.3-xml php8.3-curl php8.3-zip php8.3-fpm
+  apt-get install -y "$PHP_BIN" php8.3-cli php8.3-common php8.3-gd php8.3-mysql php8.3-mbstring php8.3-bcmath php8.3-xml php8.3-curl php8.3-zip php8.3-fpm
 
   if ! command -v composer >/dev/null 2>&1; then
     curl -fsSL https://getcomposer.org/installer -o /tmp/composer.php
     EXPECTED="$(curl -fsSL https://composer.github.io/installer.sig)"
-    ACTUAL="$(php8.3 -r "echo hash_file('sha384','/tmp/composer.php');")"
+    ACTUAL="$("$PHP_BIN" -r "echo hash_file('sha384','/tmp/composer.php');")"
     [[ "$EXPECTED" == "$ACTUAL" ]] || die "Composer checksum failed."
-    php8.3 /tmp/composer.php --install-dir=/usr/local/bin --filename=composer
+    "$PHP_BIN" /tmp/composer.php --install-dir=/usr/local/bin --filename=composer
     rm -f /tmp/composer.php
   fi
-
-  systemctl enable --now nginx mariadb redis-server php8.3-fpm cron
+  composer self-update --2 >/dev/null 2>&1 || true
+  systemctl enable --now nginx mariadb redis-server "$PHP_FPM_SERVICE" cron
 }
 
 db_setup(){
   DB_NAME="${DB_NAME:-panel}"
   DB_USER="${DB_USER:-pterodactyl}"
   DB_PASS="${DB_PASS:-$(random_pass)}"
-
   mariadb -u root <<SQL
 CREATE DATABASE IF NOT EXISTS \`${DB_NAME}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 CREATE USER IF NOT EXISTS '${DB_USER}'@'127.0.0.1' IDENTIFIED BY '${DB_PASS}';
@@ -110,121 +124,22 @@ ALTER USER '${DB_USER}'@'127.0.0.1' IDENTIFIED BY '${DB_PASS}';
 GRANT ALL PRIVILEGES ON \`${DB_NAME}\`.* TO '${DB_USER}'@'127.0.0.1';
 FLUSH PRIVILEGES;
 SQL
-
-  mkdir -p "$BACKUP_DIR"
-  chmod 700 "$BACKUP_DIR"
-  cat > "$BACKUP_DIR/database.env" <<EOF
+  mkdir -p "$BACKUP_DIR" && chmod 700 "$BACKUP_DIR"
+  cat > "$BACKUP_DIR/database.env" <<ENV
 DB_NAME=${DB_NAME}
 DB_USER=${DB_USER}
 DB_PASS=${DB_PASS}
-EOF
+ENV
   chmod 600 "$BACKUP_DIR/database.env"
 }
 
-panel_install(){
-  header
-  echo -e "${PURPLE}  AUTOMATIC PANEL INSTALLATION${R}"
-  echo
-  read -r -p "  Panel domain: " DOMAIN
-  read -r -p "  Admin email: " EMAIL
-  read -r -p "  Timezone [Asia/Kolkata]: " TZ
-  TZ="${TZ:-Asia/Kolkata}"
-  read -r -p "  Database name [panel]: " DB_NAME
-  DB_NAME="${DB_NAME:-panel}"
-  read -r -p "  Database user [pterodactyl]: " DB_USER
-  DB_USER="${DB_USER:-pterodactyl}"
-  read -r -s -p "  Database password [blank = auto]: " DB_PASS
-  echo
-  read -r -p "  Enable HTTPS automatically? [Y/n]: " SSL
-  SSL="${SSL:-Y}"
-
-  [[ "$DOMAIN" =~ ^[A-Za-z0-9.-]+$ ]] || die "Invalid domain."
-  [[ "$EMAIL" == *@*.* ]] || die "Invalid email."
-
-  echo
-  echo -e "${PURPLE}  CURRENT OPERATION${R}"
-  step "Checking system requirements"
-  info "Installing server dependencies..."
-  base_packages
-  progress "System dependencies" 100
-  ok "Dependencies installed."
-
-  progress "Configuring database" 35
-  info "Creating database..."
-  db_setup
-  progress "Configuring database" 100
-  ok "Database ready."
-
-  mkdir -p "$PANEL_DIR"
-  cd "$PANEL_DIR"
-
-  info "Downloading official Pterodactyl Panel..."
-  progress "Downloading Pterodactyl Panel" 10
-  curl -fL https://github.com/pterodactyl/panel/releases/latest/download/panel.tar.gz -o panel.tar.gz
-  tar -xzf panel.tar.gz
-  rm -f panel.tar.gz
-
-  progress "Downloading Pterodactyl Panel" 100
-  cp -n .env.example .env
-  info "Installing Composer dependencies..."
-  progress "Installing PHP dependencies" 10
-  COMPOSER_ALLOW_SUPERUSER=1 composer install --no-dev --optimize-autoloader --no-interaction
-  progress "Installing PHP dependencies" 100
-  php8.3 artisan key:generate --force
-
-  # The official CLI setup commands are used so the installer does not write
-  # Laravel/Pterodactyl internals by hand.
-  php8.3 artisan p:environment:setup -n \
-    --author="$EMAIL" \
-    --url="http://${DOMAIN}" \
-    --timezone="$TZ" \
-    --telemetry=false \
-    --cache=redis \
-    --session=redis \
-    --queue=redis \
-    --redis-host=127.0.0.1 \
-    --redis-port=6379 \
-    --redis-pass=null
-
-  php8.3 artisan p:environment:database -n \
-    --host=127.0.0.1 --port=3306 \
-    --database="$DB_NAME" --username="$DB_USER" --password="$DB_PASS"
-
-  progress "Configuring application" 70
-  php8.3 artisan migrate --seed --force
-  progress "Running migrations" 100
-
-  cat > /etc/cron.d/pterodactyl <<EOF
-* * * * * www-data php8.3 ${PANEL_DIR}/artisan schedule:run >> /dev/null 2>&1
-EOF
-
-  cat > "$QUEUE_SERVICE" <<EOF
-[Unit]
-Description=Pterodactyl Queue Worker
-After=redis-server.service
-
-[Service]
-User=www-data
-Group=www-data
-Restart=always
-ExecStart=/usr/bin/php8.3 ${PANEL_DIR}/artisan queue:work --queue=high,standard,low --sleep=3 --tries=3
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-  chown -R www-data:www-data "$PANEL_DIR"
-  chmod -R 755 "$PANEL_DIR/storage" "$PANEL_DIR/bootstrap/cache"
-  systemctl daemon-reload
-  systemctl enable --now pteroq
-  progress "Queue worker and scheduler" 100
-
-  cat > "$NGINX_CONF" <<EOF
+nginx_panel(){
+  local domain="$1"
+  cat > "$NGINX_CONF" <<EOF_NGINX
 server {
     listen 80;
     listen [::]:80;
-    server_name ${DOMAIN};
+    server_name ${domain};
     root ${PANEL_DIR}/public;
     index index.php;
     charset utf-8;
@@ -232,13 +147,10 @@ server {
     client_body_timeout 120s;
     sendfile off;
 
-    location / {
-        try_files \$uri \$uri/ /index.php?\$query_string;
-    }
-
+    location / { try_files \$uri \$uri/ /index.php?\$query_string; }
     location ~ \.php$ {
         fastcgi_split_path_info ^(.+\.php)(/.+)$;
-        fastcgi_pass unix:/run/php/php8.3-fpm.sock;
+        fastcgi_pass unix:"$PHP_FPM_SOCK";
         fastcgi_index index.php;
         include fastcgi_params;
         fastcgi_param PHP_VALUE "upload_max_filesize=100M \n post_max_size=100M";
@@ -251,238 +163,321 @@ server {
         fastcgi_send_timeout 300;
         fastcgi_read_timeout 300;
     }
-
     location ~ /\.ht { deny all; }
 }
-EOF
-
+EOF_NGINX
   rm -f /etc/nginx/sites-enabled/default
   ln -sfn "$NGINX_CONF" /etc/nginx/sites-enabled/pterodactyl.conf
-  nginx -t
-  systemctl reload nginx
-  progress "Configuring Nginx" 100
-
-  cp "$PANEL_DIR/.env" "$BACKUP_DIR/panel.env"
-  chmod 600 "$BACKUP_DIR/panel.env"
-
-  echo
-  warn "One account step remains by design: create the first admin."
-  echo "  cd $PANEL_DIR && php8.3 artisan p:user:make"
-  echo
-
-  if [[ "$SSL" =~ ^[Yy]$ ]]; then
-    warn "DNS must already point the domain to this VPS."
-    certbot --nginx --non-interactive --agree-tos -m "$EMAIL" -d "$DOMAIN" || \
-      warn "SSL was not issued. Run option 5 after DNS is ready."
-  fi
-
-  progress "Finalizing installation" 100
-  ok "Panel installation complete."
-  pause
+  nginx -t && systemctl reload nginx
 }
 
-docker_wings(){
-  command -v docker >/dev/null 2>&1 || curl -fsSL https://get.docker.com | CHANNEL=stable bash
-  systemctl enable --now docker
-
-  mkdir -p "$PTERO_DIR"
-  ARCH="$(uname -m)"
-  case "$ARCH" in
-    x86_64) WA="amd64" ;;
-    aarch64|arm64) WA="arm64" ;;
-    *) die "Unsupported CPU architecture: $ARCH" ;;
-  esac
-
-  curl -fL "https://github.com/pterodactyl/wings/releases/latest/download/wings_linux_${WA}" -o "$WINGS_BIN"
-  chmod u+x "$WINGS_BIN"
-
-  cat > "$WINGS_SERVICE" <<EOF
+queue_setup(){
+  cat > /etc/cron.d/pterodactyl <<EOF_CRON
+* * * * * www-data "$PHP_BIN" ${PANEL_DIR}/artisan schedule:run >> /dev/null 2>&1
+EOF_CRON
+  cat > "$QUEUE_SERVICE" <<EOF_SERVICE
 [Unit]
-Description=Pterodactyl Wings Daemon
-After=docker.service
-Requires=docker.service
+Description=Pterodactyl Queue Worker
+After=redis-server.service
 
 [Service]
-User=root
-WorkingDirectory=${PTERO_DIR}
-LimitNOFILE=4096
-ExecStart=${WINGS_BIN}
-Restart=on-failure
+User=www-data
+Group=www-data
+Restart=always
+ExecStart=/usr/bin/"$PHP_BIN" ${PANEL_DIR}/artisan queue:work --queue=high,standard,low --sleep=3 --tries=3
 RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
-EOF
-
+EOF_SERVICE
   systemctl daemon-reload
-  systemctl enable wings
+  systemctl enable --now pteroq
 }
 
-wings_install(){
+panel_install(){
   header
-  echo -e "${PURPLE}  AUTOMATIC WINGS INSTALLATION${R}"
+  echo -e "${WHITE}  [1] INSTALL PANEL${R}"
+  echo -e "  Fresh Pterodactyl Panel Installation"
   echo
-  docker_wings
-  ok "Docker and Wings installed."
+  read -r -p "  Panel domain (example.com): " DOMAIN
+  read -r -p "  Admin email: " ADMIN_EMAIL
+  read -r -p "  Admin username [admin]: " ADMIN_USER; ADMIN_USER="${ADMIN_USER:-admin}"
+  read -r -p "  Admin first name [Admin]: " ADMIN_FIRST; ADMIN_FIRST="${ADMIN_FIRST:-Admin}"
+  read -r -p "  Admin last name [User]: " ADMIN_LAST; ADMIN_LAST="${ADMIN_LAST:-User}"
+  read -r -s -p "  Admin password: " ADMIN_PASS; echo
+  read -r -s -p "  Database password [blank = auto]: " DB_PASS; echo
+  read -r -p "  Timezone [Asia/Kolkata]: " TZ; TZ="${TZ:-Asia/Kolkata}"
+  read -r -p "  Install SSL now? [Y/n]: " SSL; SSL="${SSL:-Y}"
+
+  [[ "$DOMAIN" =~ ^[A-Za-z0-9.-]+$ ]] || die "Invalid domain."
+  [[ "$ADMIN_EMAIL" == *@*.* ]] || die "Invalid email."
+  [[ ${#ADMIN_PASS} -ge 8 ]] || die "Admin password must be at least 8 characters."
+
   echo
-  warn "A real node config contains credentials generated by your Panel."
-  echo "To make this safe, SkylerNodes does not fabricate those credentials."
-  echo "The installer will automatically start Wings once /etc/pterodactyl/config.yml exists."
-  if [[ -f "$PTERO_DIR/config.yml" ]]; then
-    systemctl start wings
-    ok "Existing node config detected; Wings started."
-  else
-    warn "No node config found yet."
-  fi
-  pause
-}
+  echo -e "${PURPLE}  INSTALLATION PROGRESS${R}"
+  step "Checking system requirements"
+  info "Installing PHP, MariaDB, Redis, Nginx and Composer..."
+  base_packages
+  progress "Installing system dependencies" 100
 
-all_in_one(){
-  panel_install
-  wings_install
-  header
-  ok "All software installation steps completed."
-  warn "The only external dependency is the Panel-generated Wings node config."
-  pause
-}
+  DB_NAME="panel"; DB_USER="pterodactyl"
+  progress "Creating panel database" 20
+  db_setup
+  progress "Creating panel database" 100
 
-update_panel(){
-  [[ -d "$PANEL_DIR" ]] || die "Panel is not installed."
-  cd "$PANEL_DIR"
-  php8.3 artisan down || true
-  cp -f .env "$BACKUP_DIR/env-before-update-$(date +%Y%m%d-%H%M%S)"
-  curl -fL https://github.com/pterodactyl/panel/releases/latest/download/panel.tar.gz | tar -xz
+  mkdir -p "$PANEL_DIR"; cd "$PANEL_DIR"
+  info "Downloading the official Pterodactyl release..."
+  progress "Downloading Pterodactyl Panel" 10
+  curl -fL https://github.com/pterodactyl/panel/releases/latest/download/panel.tar.gz -o panel.tar.gz
+  tar -xzf panel.tar.gz; rm -f panel.tar.gz
+  progress "Downloading Pterodactyl Panel" 100
+
+  cp -n .env.example .env
+  progress "Installing PHP dependencies" 10
   COMPOSER_ALLOW_SUPERUSER=1 composer install --no-dev --optimize-autoloader --no-interaction
-  php8.3 artisan migrate --seed --force
-  php8.3 artisan optimize:clear
+  progress "Installing PHP dependencies" 100
+  "$PHP_BIN" artisan key:generate --force >/dev/null
+
+  set_env APP_URL "http://${DOMAIN}"
+  set_env APP_TIMEZONE "$TZ"
+  set_env CACHE_DRIVER redis
+  set_env SESSION_DRIVER redis
+  set_env QUEUE_CONNECTION redis
+  set_env REDIS_HOST 127.0.0.1
+  set_env REDIS_PORT 6379
+  set_env REDIS_PASSWORD null
+  set_env DB_CONNECTION mysql
+  set_env DB_HOST 127.0.0.1
+  set_env DB_PORT 3306
+  set_env DB_DATABASE "$DB_NAME"
+  set_env DB_USERNAME "$DB_USER"
+  set_env DB_PASSWORD "$DB_PASS"
+  set_env MAIL_MAILER log
+  "$PHP_BIN" artisan config:clear >/dev/null
+
+  progress "Preparing database schema" 25
+  "$PHP_BIN" artisan migrate --seed --force
+  progress "Preparing database schema" 100
+
   chown -R www-data:www-data "$PANEL_DIR"
-  php8.3 artisan up
-  ok "Panel updated automatically."
-  pause
-}
+  chmod -R 755 "$PANEL_DIR/storage" "$PANEL_DIR/bootstrap/cache"
+  queue_setup
+  progress "Configuring queue and scheduler" 100
+  nginx_panel "$DOMAIN"
+  progress "Configuring Nginx" 100
 
-ssl(){
-  header
-  read -r -p "  Domain: " D
-  read -r -p "  Email: " E
-  certbot --nginx --agree-tos -m "$E" -d "$D"
-  ok "SSL completed."
-  pause
-}
-
-repair(){
-  header
-  if [[ -d "$PANEL_DIR" ]]; then
-    cd "$PANEL_DIR"
-    COMPOSER_ALLOW_SUPERUSER=1 composer install --no-dev --optimize-autoloader --no-interaction
-    php8.3 artisan optimize:clear
-    php8.3 artisan optimize
-    chown -R www-data:www-data "$PANEL_DIR"
+  if [[ "$SSL" =~ ^[Yy]$ ]]; then
+    info "Requesting Let's Encrypt certificate..."
+    certbot --nginx --non-interactive --agree-tos -m "$ADMIN_EMAIL" -d "$DOMAIN" || warn "SSL could not be issued. Use option 4 after DNS points to this VPS."
   fi
+
+  "$PHP_BIN" artisan p:user:make --email="$ADMIN_EMAIL" --username="$ADMIN_USER" --name-first="$ADMIN_FIRST" --name-last="$ADMIN_LAST" --password="$ADMIN_PASS" --admin=1
+  cp "$PANEL_DIR/.env" "$BACKUP_DIR/panel.env"
+  chmod 600 "$BACKUP_DIR/panel.env"
+
+  echo
+  echo -e "${GREEN}╭────────────────────────────────────────────────────────────╮${R}"
+  echo -e "${GREEN}│${R}  ${WHITE}PTERODACTYL PANEL INSTALLED SUCCESSFULLY${R}                 ${GREEN}│${R}"
+  echo -e "${GREEN}│${R}  URL: ${CYAN}$([[ "$SSL" =~ ^[Yy]$ ]] && echo "https" || echo "http")://${DOMAIN}${R}"
+  echo -e "${GREEN}│${R}  Admin: ${CYAN}${ADMIN_EMAIL}${R}"
+  echo -e "${GREEN}╰────────────────────────────────────────────────────────────╯${R}"
+  pause
+}
+
+user_management(){
+  header
+  echo -e "${WHITE}  [2] USER MANAGEMENT${R}"
+  echo -e "  Create Admin / User Accounts"
+  echo
+  echo "  [1] Create Admin"
+  echo "  [2] Create User"
+  echo "  [3] Delete User"
+  echo "  [4] Disable 2FA"
+  echo "  [0] Back"
+  echo
+  read -r -p "  Select: " X
+  cd "$PANEL_DIR" 2>/dev/null || { warn "Panel is not installed."; pause; return; }
+  case "$X" in
+    1|2)
+      read -r -p "  Email: " E; read -r -p "  Username: " U; read -r -p "  First name: " F; read -r -p "  Last name: " L; read -r -s -p "  Password: " P; echo
+      [[ ${#P} -ge 8 ]] || { warn "Password must be at least 8 characters."; pause; return; }
+      ADMIN_FLAG=0; [[ "$X" == "1" ]] && ADMIN_FLAG=1
+      "$PHP_BIN" artisan p:user:make --email="$E" --username="$U" --name-first="$F" --name-last="$L" --password="$P" --admin="$ADMIN_FLAG"
+      ;;
+    3)
+      read -r -p "  Username / email / UUID: " U; "$PHP_BIN" artisan p:user:delete --user="$U" ;;
+    4)
+      read -r -p "  User email: " E; "$PHP_BIN" artisan p:user:disable2fa --email="$E" ;;
+  esac
+  pause
+}
+
+panel_update(){
+  header
+  echo -e "${WHITE}  [3] PANEL UPDATE${R}"
+  echo -e "  Update to a Pterodactyl Release"
+  echo
+  [[ -d "$PANEL_DIR" ]] || { warn "Panel is not installed."; pause; return; }
+  cd "$PANEL_DIR"
+  mkdir -p "$BACKUP_DIR"
+  cp -f .env "$BACKUP_DIR/env-before-update-$(date +%Y%m%d-%H%M%S)"
+  "$PHP_BIN" artisan down || true
+  progress "Downloading latest release" 10
+  curl -fL https://github.com/pterodactyl/panel/releases/latest/download/panel.tar.gz | tar -xz
+  progress "Downloading latest release" 100
+  progress "Updating Composer dependencies" 20
+  COMPOSER_ALLOW_SUPERUSER=1 composer install --no-dev --optimize-autoloader --no-interaction
+  progress "Updating Composer dependencies" 100
+  "$PHP_BIN" artisan migrate --seed --force
+  "$PHP_BIN" artisan optimize:clear
+  chown -R www-data:www-data "$PANEL_DIR"
+  "$PHP_BIN" artisan up
+  ok "Panel update completed."
+  pause
+}
+
+domain_ssl(){
+  header
+  echo -e "${WHITE}  [4] DOMAIN / SSL${R}"
+  echo -e "  Configure Domain and SSL"
+  echo
+  [[ -d "$PANEL_DIR" ]] || { warn "Panel is not installed."; pause; return; }
+  read -r -p "  New panel domain: " D
+  read -r -p "  SSL email: " E
+  [[ "$D" =~ ^[A-Za-z0-9.-]+$ ]] || { warn "Invalid domain."; pause; return; }
+  nginx_panel "$D"
+  sed -i "s#^APP_URL=.*#APP_URL=https://${D}#" "$PANEL_DIR/.env" || true
+  (cd "$PANEL_DIR" && "$PHP_BIN" artisan config:clear >/dev/null)
+  certbot --nginx --non-interactive --agree-tos -m "$E" -d "$D"
+  ok "Domain and SSL configured."
+  pause
+}
+
+uninstall_panel(){
+  header
+  echo -e "${WHITE}  [5] UNINSTALL PANEL${R}"
+  echo -e "  Remove Panel Data and Configuration"
+  echo
+  warn "This removes the Pterodactyl panel files, Nginx config and queue service."
+  warn "It does not remove system packages or automatically delete the database."
+  read -r -p "  Type REMOVE to continue: " X
+  [[ "$X" == "REMOVE" ]] || { echo "  Cancelled."; pause; return; }
+  mkdir -p "$BACKUP_DIR"
+  [[ -f "$PANEL_DIR/.env" ]] && cp "$PANEL_DIR/.env" "$BACKUP_DIR/uninstall-env-$(date +%Y%m%d-%H%M%S)"
+  systemctl disable --now pteroq 2>/dev/null || true
+  rm -f "$QUEUE_SERVICE" /etc/cron.d/pterodactyl /etc/nginx/sites-enabled/pterodactyl.conf "$NGINX_CONF"
+  rm -rf "$PANEL_DIR"
+  systemctl daemon-reload
+  nginx -t && systemctl reload nginx || true
+  ok "Panel data and configuration removed."
+  pause
+}
+
+phpmyadmin_install(){
+  header
+  echo -e "${WHITE}  [6] PHPMYADMIN${R}"
+  echo -e "  Database Management"
+  echo
+  if [[ -d /usr/share/phpmyadmin ]]; then
+    ok "phpMyAdmin is already installed."
+  else
+    export DEBIAN_FRONTEND=noninteractive
+    echo 'phpmyadmin phpmyadmin/reconfigure-webserver multiselect' | debconf-set-selections
+    echo 'phpmyadmin phpmyadmin/dbconfig-install boolean false' | debconf-set-selections
+    progress "Installing phpMyAdmin" 10
+    apt-get update
+    apt-get install -y phpmyadmin
+    progress "Installing phpMyAdmin" 100
+  fi
+
+  mkdir -p /etc/phpmyadmin
+  if [[ ! -f /etc/phpmyadmin/config.inc.php ]]; then
+    BLOWFISH="$(openssl rand -base64 32 | tr -d '=+/\n' | cut -c1-32)"
+    cat > /etc/phpmyadmin/config.inc.php <<EOF_PM
+<?php
+\$cfg['blowfish_secret'] = '${BLOWFISH}';
+\$cfg['Servers'][1]['auth_type'] = 'cookie';
+\$cfg['Servers'][1]['host'] = '127.0.0.1';
+\$cfg['Servers'][1]['port'] = '3306';
+\$cfg['TempDir'] = '/var/lib/phpmyadmin/tmp';
+EOF_PM
+    mkdir -p /var/lib/phpmyadmin/tmp
+    chown -R www-data:www-data /var/lib/phpmyadmin
+  fi
+
+  cat > "$PHPMYADMIN_CONF" <<'EOF_PMNGINX'
+server {
+    listen 8080;
+    listen [::]:8080;
+    server_name _;
+    root /usr/share/phpmyadmin;
+    index index.php;
+    client_max_body_size 100M;
+    location / { try_files $uri $uri/ /index.php?$query_string; }
+    location ~ \.php$ {
+        include snippets/fastcgi-php.conf;
+        fastcgi_pass unix:"$PHP_FPM_SOCK";
+    }
+    location ~ /\.ht { deny all; }
+}
+EOF_PMNGINX
+  ln -sfn "$PHPMYADMIN_CONF" /etc/nginx/sites-enabled/phpmyadmin.conf
   nginx -t && systemctl reload nginx
-  systemctl restart php8.3-fpm redis-server mariadb pteroq 2>/dev/null || true
-  systemctl restart wings 2>/dev/null || true
-  ok "Repair completed."
+  echo
+  ok "phpMyAdmin is ready on: http://SERVER-IP:8080/"
+  warn "For production, put phpMyAdmin behind a private VPN or a protected HTTPS domain."
   pause
 }
 
 status(){
   header
-  echo -e "${PURPLE}  SERVICE STATUS${R}"
-  echo
-  for S in nginx mariadb redis-server php8.3-fpm pteroq docker wings; do
-    if systemctl is-active --quiet "$S" 2>/dev/null; then
-      echo -e "    ${GREEN}●${R} $S  ${GREEN}RUNNING${R}"
-    else
-      echo -e "    ${RED}●${R} $S  ${GRAY}STOPPED / NOT INSTALLED${R}"
-    fi
+  echo -e "${WHITE}  SYSTEM STATUS${R}\n"
+  for S in nginx mariadb redis-server php8.3-fpm pteroq; do
+    if systemctl is-active --quiet "$S" 2>/dev/null; then echo -e "  ${GREEN}●${R} $S  ${GREEN}RUNNING${R}"; else echo -e "  ${RED}●${R} $S  ${GRAY}STOPPED / NOT INSTALLED${R}"; fi
   done
-  echo
-  echo "    Panel : $([[ -d "$PANEL_DIR" ]] && echo INSTALLED || echo NOT-INSTALLED)"
-  echo "    Wings : $([[ -x "$WINGS_BIN" ]] && echo INSTALLED || echo NOT-INSTALLED)"
-  pause
-}
-
-logs(){
-  header
-  echo "[1] Queue"
-  echo "[2] Nginx"
-  echo "[3] Wings"
-  echo "[4] Laravel"
-  echo "[0] Back"
-  echo
-  read -r -p "  Select: " X
-  case "$X" in
-    1) journalctl -u pteroq -n 100 --no-pager ;;
-    2) tail -n 100 /var/log/nginx/error.log ;;
-    3) journalctl -u wings -n 100 --no-pager ;;
-    4) F="$(ls -t "$PANEL_DIR"/storage/logs/*.log 2>/dev/null | head -n1 || true)"; [[ -n "$F" ]] && tail -n 100 "$F" || echo "No Laravel log found." ;;
-  esac
-  pause
-}
-
-backup(){
-  header
-  mkdir -p "$BACKUP_DIR"
-  if [[ -f "$BACKUP_DIR/database.env" ]]; then
-    # shellcheck disable=SC1091
-    source "$BACKUP_DIR/database.env"
-    mysqldump -u root "$DB_NAME" | gzip > "$BACKUP_DIR/${DB_NAME}-$(date +%Y%m%d-%H%M%S).sql.gz"
-    ok "Database backup created."
-  fi
-  [[ -f "$PANEL_DIR/.env" ]] && cp "$PANEL_DIR/.env" "$BACKUP_DIR/panel-env-$(date +%Y%m%d-%H%M%S).backup"
-  chmod 600 "$BACKUP_DIR"/*
-  echo "  Backups: $BACKUP_DIR"
-  pause
-}
-
-uninstall(){
-  header
-  warn "This removes SkylerNodes installer-managed Pterodactyl components."
-  read -r -p "  Type REMOVE to continue: " X
-  [[ "$X" == "REMOVE" ]] || { echo "  Cancelled."; pause; return; }
-
-  systemctl disable --now pteroq wings 2>/dev/null || true
-  rm -f "$QUEUE_SERVICE" "$WINGS_SERVICE" /etc/cron.d/pterodactyl "$WINGS_BIN"
-  rm -f /etc/nginx/sites-enabled/pterodactyl.conf "$NGINX_CONF"
-  systemctl daemon-reload
-  nginx -t && systemctl reload nginx || true
-  read -r -p "  Delete Panel files too? [y/N]: " D
-  [[ "$D" =~ ^[Yy]$ ]] && rm -rf "$PANEL_DIR"
-  ok "Installer-managed components removed."
   pause
 }
 
 menu(){
   while true; do
     header
-    echo -e " ${PURPLE}╭────────────────────── SKYLER NODES ───────────────────────╮${R}"
-    echo -e " ${PURPLE}│${R}  ${GREEN}[1]${R} Install Panel       ${CYAN}[2]${R} Install Wings        ${PURPLE}│${R}"
-    echo -e " ${PURPLE}│${R}  ${YELLOW}[3]${R} All-in-One           ${BLUE}[4]${R} Update Panel         ${PURPLE}│${R}"
-    echo -e " ${PURPLE}│${R}  ${CYAN}[5]${R} SSL / Let's Encrypt  ${PURPLE}[6]${R} Repair / Optimize    ${PURPLE}│${R}"
-    echo -e " ${PURPLE}│${R}  ${GREEN}[7]${R} Status               ${YELLOW}[8]${R} View Logs             ${PURPLE}│${R}"
-    echo -e " ${PURPLE}│${R}  ${CYAN}[9]${R} Backup               ${RED}[10]${R} Uninstall              ${PURPLE}│${R}"
-    echo -e " ${PURPLE}│${R}  ${GRAY}[0]${R} Exit                                             ${PURPLE}│${R}"
-    echo -e " ${PURPLE}╰───────────────────────────────────────────────────────────╯${R}"
+    echo -e "  ${WHITE}PANEL MANAGEMENT${R}"
+    echo -e "  ${GRAY}────────────────────────────────────────────────────────────${R}"
     echo
-    echo -e " ${GRAY}Ubuntu 22.04/24.04 • Official Pterodactyl releases • SkylerNodes${R}"
+    echo -e "  ${CYAN}[1]${R} ${WHITE}Install Panel${R}"
+    echo -e "      ${GRAY}Fresh Pterodactyl Panel Installation${R}"
     echo
-    printf "  ${BLUE}SYSTEM${R}  OS: %-12s  CPU: %-3s  RAM: %-12s  DISK: %-12s\n"       "$(grep -oP '(?<=^PRETTY_NAME=).+' /etc/os-release | tr -d '"' | cut -c1-12)"       "$(nproc 2>/dev/null || echo '?')"       "$(free -h | awk '/^Mem:/ {print $3"/"$2}')"       "$(df -h / | awk 'NR==2 {print $3"/"$2}')"
+    echo -e "  ${CYAN}[2]${R} ${WHITE}User Management${R}"
+    echo -e "      ${GRAY}Create Admin / User Accounts${R}"
     echo
-    read -r -p "  Select [0-10]: " N
+    echo -e "  ${CYAN}[3]${R} ${WHITE}Panel Update${R}"
+    echo -e "      ${GRAY}Update to a Pterodactyl Release${R}"
+    echo
+    echo -e "  ${CYAN}[4]${R} ${WHITE}Domain / SSL${R}"
+    echo -e "      ${GRAY}Configure Domain and SSL${R}"
+    echo
+    echo -e "  ${CYAN}[5]${R} ${WHITE}Uninstall Panel${R}"
+    echo -e "      ${GRAY}Remove Panel Data and Configuration${R}"
+    echo
+    echo -e "  ${CYAN}[6]${R} ${WHITE}phpMyAdmin${R}"
+    echo -e "      ${GRAY}Database Management${R}"
+    echo
+    echo -e "  ${GRAY}────────────────────────────────────────────────────────────${R}"
+    printf "  ${BLUE}SYSTEM${R}  Ubuntu %-5s  CPU %-3s  RAM %-12s  DISK %-12s\n" "${VERSION_ID}" "$(nproc 2>/dev/null || echo '?')" "$(free -h | awk '/^Mem:/ {print $3"/"$2}')" "$(df -h / | awk 'NR==2 {print $3"/"$2}')"
+    echo
+    echo -e "  ${GRAY}0) Exit${R}"
+    echo
+    read -r -p "  Select an option [0-6]: " N
     case "$N" in
       1) panel_install ;;
-      2) wings_install ;;
-      3) all_in_one ;;
-      4) update_panel ;;
-      5) ssl ;;
-      6) repair ;;
+      2) user_management ;;
+      3) panel_update ;;
+      4) domain_ssl ;;
+      5) uninstall_panel ;;
+      6) phpmyadmin_install ;;
       7) status ;;
-      8) logs ;;
-      9) backup ;;
-      10) uninstall ;;
       0) clear 2>/dev/null || true; exit 0 ;;
-      *) warn "Invalid option."; sleep 1 ;;
+      *) warn "Invalid option. Choose 0-6."; sleep 1 ;;
     esac
   done
 }
